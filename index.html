@@ -320,10 +320,102 @@
         font-size: 16px;
       }
     }
+
+    /* Mobile touch zones */
+    #touchOverlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 3;
+      pointer-events: none;
+    }
+
+    .touch-zone {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 42%;
+      pointer-events: auto;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    #touchLeft {
+      left: 0;
+    }
+
+    #touchRight {
+      right: 0;
+    }
+
+    .touch-hint {
+      position: absolute;
+      bottom: 100px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: rgba(168, 231, 255, 0.28);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    #touchLeft .touch-hint {
+      left: 14px;
+    }
+
+    #touchRight .touch-hint {
+      right: 14px;
+    }
+
+    .touch-hint svg {
+      width: 18px;
+      height: 18px;
+      opacity: 0.5;
+    }
+
+    .touch-zone.active-zone {
+      background: rgba(97, 231, 255, 0.04);
+    }
+
+    @media (pointer: coarse) {
+      #touchOverlay {
+        display: block;
+      }
+    }
+
+    /* High score display in menus */
+    .high-score-line {
+      margin: -8px 0 18px;
+      color: var(--amber);
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
   </style>
 </head>
 <body>
   <canvas id="gameCanvas" aria-label="Evo Blaster game canvas"></canvas>
+
+  <!-- Mobile touch zones: left half = move left, right half = move right, tap anywhere = shoot -->
+  <div id="touchOverlay">
+    <div class="touch-zone" id="touchLeft">
+      <div class="touch-hint">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+        Move left
+      </div>
+    </div>
+    <div class="touch-zone" id="touchRight">
+      <div class="touch-hint">
+        Move right
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+      </div>
+    </div>
+  </div>
 
   <div id="hud">
     <div class="stat"><span>Score</span><strong id="score">0</strong></div>
@@ -355,7 +447,8 @@
   <section id="startScreen" class="overlay">
     <div class="menu">
       <h1>Evo Blaster</h1>
-      <p>Survive the descent, hold Space or mouse to autofire, and let the ship evolve around your choices.</p>
+      <p id="startHighScore" class="high-score-line" style="display:none"></p>
+      <p>Survive the descent. Fire: hold Space or tap screen. Evolve your weapon by how you play.<br><small style="opacity:.7;font-size:12px">Desktop: A/D or &#8592;&#8594; to move &nbsp;&#183;&nbsp; Mobile: hold left or right half of screen</small></p>
       <button id="startButton" class="primary-btn">Start Run</button>
     </div>
   </section>
@@ -382,6 +475,7 @@
       <p>Final Score</p>
       <div id="finalScore" class="final-score">0</div>
       <p id="finalWave">Wave 1</p>
+      <p id="gameOverHighScore" class="high-score-line" style="display:none"></p>
       <button id="restartButton" class="primary-btn">Restart</button>
     </div>
   </section>
@@ -445,7 +539,7 @@
       }
     };
 
-    let nextEnemyId = 1;
+    let nextEnemyId = 1;  // reset per startGame()
 
     class Player {
       constructor(game) {
@@ -504,6 +598,7 @@
 
         this.health -= 1;
         this.hurtFlash = 0.24;
+        Audio.hurt();
         this.game.addShake(10, 0.22);
 
         if (this.health <= 0) {
@@ -1144,6 +1239,7 @@
         }
 
         this.recordShot(bullets.length);
+        Audio.shoot();
         player.fireTimer = WEAPONS[this.current].cooldown * (player.rapidTimer > 0 ? 0.62 : 1);
         return bullets;
       }
@@ -1193,6 +1289,7 @@
         if (clearLead && best.type !== this.current) {
           this.current = best.type;
           this.lastEvolutionAt = this.game.time;
+          Audio.evolve();
           this.game.showToast(`Weapon evolved: ${this.displayName}`);
         }
       }
@@ -1358,6 +1455,14 @@
 
         this.resize();
         this.bindEvents();
+
+        // Show stored high score on start screen
+        const storedHigh = parseInt(localStorage.getItem("evoBlasterHigh") || "0", 10);
+        if (storedHigh > 0) {
+          const el = document.getElementById("startHighScore");
+          el.style.display = "";
+          el.textContent = "Best: " + storedHigh.toLocaleString();
+        }
         this.makeStars();
         this.updateHud();
         requestAnimationFrame((timestamp) => this.loop(timestamp));
@@ -1366,6 +1471,7 @@
       bindEvents() {
         window.addEventListener("resize", () => this.resize());
 
+        // ── Keyboard ──────────────────────────────────────────────────────
         window.addEventListener("keydown", (event) => {
           if (["Space", "ArrowLeft", "ArrowRight"].includes(event.code)) {
             event.preventDefault();
@@ -1404,15 +1510,73 @@
           this.input.shoot = false;
         });
 
+        // ── Mouse (desktop) ───────────────────────────────────────────────
         this.canvas.addEventListener("pointerdown", (event) => {
+          if (event.pointerType === "touch") return; // handled by touch zones
           if (event.button !== 0 || this.state !== "playing") return;
           event.preventDefault();
           this.input.shoot = true;
           this.canvas.setPointerCapture?.(event.pointerId);
         });
 
-        window.addEventListener("pointerup", () => {
+        window.addEventListener("pointerup", (event) => {
+          if (event.pointerType === "touch") return;
           this.input.shoot = false;
+        });
+
+        // ── Touch zones (mobile) ──────────────────────────────────────────
+        // Left zone  → move left  |  Right zone → move right
+        // Both zones fire on press (shoot = true for the duration of any touch)
+        const touchLeft  = document.getElementById("touchLeft");
+        const touchRight = document.getElementById("touchRight");
+
+        // Track active touches per zone so multi-finger works correctly
+        const leftTouches  = new Set();
+        const rightTouches = new Set();
+
+        const syncTouchInput = () => {
+          this.input.left  = leftTouches.size  > 0;
+          this.input.right = rightTouches.size > 0;
+          // Any active touch = shoot
+          this.input.shoot = (leftTouches.size + rightTouches.size) > 0 && this.state === "playing";
+          touchLeft.classList.toggle("active-zone",  leftTouches.size  > 0);
+          touchRight.classList.toggle("active-zone", rightTouches.size > 0);
+        };
+
+        const onTouchStart = (zone, set, event) => {
+          event.preventDefault();
+          if (this.state === "start" || this.state === "gameover") {
+            this.startGame();
+            return;
+          }
+          for (const touch of event.changedTouches) {
+            set.add(touch.identifier);
+          }
+          syncTouchInput();
+        };
+
+        const onTouchEnd = (set, event) => {
+          for (const touch of event.changedTouches) {
+            set.delete(touch.identifier);
+          }
+          syncTouchInput();
+        };
+
+        touchLeft.addEventListener("touchstart",  (e) => onTouchStart("left",  leftTouches,  e), { passive: false });
+        touchLeft.addEventListener("touchend",    (e) => onTouchEnd(leftTouches,  e));
+        touchLeft.addEventListener("touchcancel", (e) => onTouchEnd(leftTouches,  e));
+
+        touchRight.addEventListener("touchstart",  (e) => onTouchStart("right", rightTouches, e), { passive: false });
+        touchRight.addEventListener("touchend",    (e) => onTouchEnd(rightTouches, e));
+        touchRight.addEventListener("touchcancel", (e) => onTouchEnd(rightTouches, e));
+
+        // Safety: clear all touch state if all fingers lift (touchend can miss fingers)
+        window.addEventListener("touchend", (e) => {
+          if (e.touches.length === 0) {
+            leftTouches.clear();
+            rightTouches.clear();
+            syncTouchInput();
+          }
         });
 
         document.getElementById("startButton").addEventListener("click", () => this.startGame());
@@ -1446,6 +1610,7 @@
         this.breachLimit = 100;
         this.killsSinceGiftDrop = 0;
         this.lastEscapeToast = -999;
+        nextEnemyId = 1;
         this.player = new Player(this);
         this.weaponSystem = new WeaponSystem(this);
         this.waveManager = new WaveManager(this);
@@ -1555,10 +1720,74 @@
             apply: (game) => {
               game.player.scoreMultiplier += 0.25;
             }
+          },
+          {
+            title: "Double Thruster",
+            detail: "Movement speed +25%",
+            toast: "Upgrade installed: Double Thruster",
+            apply: (game) => {
+              game.player.speed *= 1.25;
+            }
+          },
+          {
+            title: "Iron Shell",
+            detail: "Max health +2",
+            toast: "Upgrade installed: Iron Shell",
+            apply: (game) => {
+              game.player.maxHealth += 2;
+              game.player.health = Math.min(game.player.maxHealth, game.player.health + 2);
+            }
+          },
+          {
+            title: "Overcharged Rounds",
+            detail: "Bullet damage +0.7",
+            toast: "Upgrade installed: Overcharged Rounds",
+            apply: (game) => {
+              game.player.damageBonus += 0.7;
+            }
+          },
+          {
+            title: "Rapid Synapse",
+            detail: "Evolution cooldown -6s",
+            toast: "Upgrade installed: Rapid Synapse",
+            apply: (game) => {
+              game.weaponSystem.reduceCooldown();
+              game.weaponSystem.reduceCooldown();
+            }
+          },
+          {
+            title: "Void Shield",
+            detail: "Shield blocks two hits",
+            toast: "Upgrade installed: Void Shield",
+            apply: (game) => {
+              game.player.shield += 2;
+            }
+          },
+          {
+            title: "Score Cascade",
+            detail: "Score multiplier +0.5",
+            toast: "Upgrade installed: Score Cascade",
+            apply: (game) => {
+              game.player.scoreMultiplier += 0.5;
+            }
+          },
+          {
+            title: "Bulwark Plating",
+            detail: "Restore 1 health + 1 shield",
+            toast: "Upgrade installed: Bulwark Plating",
+            apply: (game) => {
+              game.player.health = Math.min(game.player.maxHealth, game.player.health + 1);
+              game.player.shield += 1;
+            }
           }
         ];
 
-        const shuffled = pool.sort(() => Math.random() - 0.5);
+        // Fisher-Yates unbiased shuffle
+        const shuffled = [...pool];
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
         return shuffled.slice(0, count);
       }
 
@@ -1780,6 +2009,7 @@
         this.spawnExplosion(enemy.x, enemy.y, enemy.color, enemy.type === "boss" ? 2.4 : 1);
         this.maybeDropPowerUp(enemy);
 
+        Audio.explode();
         if (enemy.type === "boss") {
           this.addShake(18, 0.45);
         }
@@ -1842,6 +2072,7 @@
           player.overdriveTimer = Math.max(player.overdriveTimer, 8);
         }
 
+        Audio.powerUp();
         this.showToast(`Gift collected: ${config.name}`);
       }
 
@@ -1885,9 +2116,23 @@
       endGame() {
         this.state = "gameover";
         this.input.shoot = false;
-        this.ui.finalScore.textContent = String(Math.max(0, Math.floor(this.score)));
+        const finalScore = Math.max(0, Math.floor(this.score));
+        this.ui.finalScore.textContent = String(finalScore);
         this.ui.finalWave.textContent = `Reached Wave ${this.waveManager ? this.waveManager.wave : 1}`;
         this.ui.gameOverScreen.classList.remove("hidden");
+
+        // Save high score
+        const prev = parseInt(localStorage.getItem("evoBlasterHigh") || "0", 10);
+        if (finalScore > prev) {
+          localStorage.setItem("evoBlasterHigh", String(finalScore));
+          const el = document.getElementById("gameOverHighScore");
+          el.style.display = "";
+          el.textContent = "🏆 New Best: " + finalScore.toLocaleString();
+        } else if (prev > 0) {
+          const el = document.getElementById("gameOverHighScore");
+          el.style.display = "";
+          el.textContent = "Best: " + prev.toLocaleString();
+        }
         this.updateHud();
       }
 
@@ -2008,6 +2253,49 @@
         if (this.player && this.state !== "start") this.player.draw(ctx);
       }
     }
+
+    // ── Audio engine ────────────────────────────────────────────────────────
+    const Audio = (() => {
+      let ctx = null;
+
+      function getCtx() {
+        if (!ctx) {
+          try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; }
+        }
+        if (ctx.state === "suspended") ctx.resume();
+        return ctx;
+      }
+
+      function playTone({ freq = 440, freq2 = null, type = "square", gain = 0.18, attack = 0.005, decay = 0.08, duration = 0.1 }) {
+        const c = getCtx();
+        if (!c) return;
+        const osc = c.createOscillator();
+        const env = c.createGain();
+        osc.connect(env);
+        env.connect(c.destination);
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, c.currentTime);
+        if (freq2 !== null) osc.frequency.exponentialRampToValueAtTime(freq2, c.currentTime + duration);
+        env.gain.setValueAtTime(0, c.currentTime);
+        env.gain.linearRampToValueAtTime(gain, c.currentTime + attack);
+        env.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + attack + decay);
+        osc.start(c.currentTime);
+        osc.stop(c.currentTime + attack + decay + 0.01);
+      }
+
+      return {
+        shoot()     { playTone({ freq: 820, freq2: 440, type: "square",   gain: 0.07, attack: 0.001, decay: 0.055, duration: 0.055 }); },
+        hit()       { playTone({ freq: 260, freq2: 120, type: "sawtooth", gain: 0.10, attack: 0.002, decay: 0.08,  duration: 0.08  }); },
+        explode()   { playTone({ freq: 140, freq2: 60,  type: "sawtooth", gain: 0.18, attack: 0.003, decay: 0.22,  duration: 0.22  }); },
+        evolve()    {
+          [440, 554, 659, 880].forEach((f, i) => {
+            setTimeout(() => playTone({ freq: f, type: "sine", gain: 0.14, attack: 0.01, decay: 0.18, duration: 0.18 }), i * 70);
+          });
+        },
+        powerUp()   { playTone({ freq: 660, freq2: 990, type: "sine",    gain: 0.14, attack: 0.01,  decay: 0.14,  duration: 0.14  }); },
+        hurt()      { playTone({ freq: 180, freq2: 80,  type: "sawtooth", gain: 0.22, attack: 0.001, decay: 0.18,  duration: 0.18  }); },
+      };
+    })();
 
     new Game();
   </script>
